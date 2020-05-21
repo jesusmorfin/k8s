@@ -1,0 +1,139 @@
+---
+- hosts: kubernetes
+  become: True
+
+  tasks:
+    - name: Commenting Swap entries in /etc/fstab
+      replace:
+        path: /etc/fstab
+        regexp: '(^/.*swap*)'
+        replace: '# \1'
+      register: fstab
+
+    - name: upgrade all packages
+      yum: name=* state=latest update_cache=yes
+
+    - name: Install the libselinux-python package
+      yum: name=libselinux-python state=present
+
+    - name: Disable SELinux
+      selinux: state=disabled
+      register: SELinux
+
+    - name: Restart host
+      reboot:
+        reboot_timeout: 3600
+      when: SELinux.changed or fstab.changed
+    
+    - name: Install required packages
+      yum:
+        name: ['yum-utils', 'device-mapper-persistent-data', 'lvm2']
+        state: latest
+
+    - name: Add repository
+      get_url:
+        url: https://download.docker.com/linux/centos/docker-ce.repo
+        dest: /etc/yum.repos.d/docer-ce.repo
+
+    - yum:
+        name: ['docker-ce-19.03.8', 'docker-ce-cli-19.03.8', 'containerd.io-1.2.13']
+        state: present
+        
+    - name: Create /etc/docker
+      file:
+        path: /etc/docker
+        state: directory
+        mode: '0755'
+
+    - name: Copy file with owner and permissions
+      copy:
+        src: daemon.json
+        dest: /etc/docker/daemon.json
+        mode: '0644'
+        owner: root
+        group: root
+
+    - name: Create /etc/systemd/system/docker.service.d
+      file:
+        path: /etc/systemd/system/docker.service.d
+        state: directory
+        mode: '0755'
+
+    - name: just force systemd to reread configs (2.4 and above)
+      systemd:
+        daemon_reload: yes
+
+    - name: Restart Docker
+      service:
+        name: docker
+        state: restarted
+        enabled: yes
+
+    - name: ensure net.bridge.bridge-nf-call-ip6tables is set to 1
+      sysctl:
+        name: net.bridge.bridge-nf-call-ip6tables
+        value: 1
+        state: present
+
+    - name: ensure net.bridge.bridge-nf-call-iptables is set to 1
+      sysctl:
+        name: net.bridge.bridge-nf-call-iptables
+        value: 1
+        state: present
+
+    - name: add Kubernetes' YUM repository
+      yum_repository:
+        name: Kubernetes
+        description: Kubernetes YUM repository
+        baseurl: https://packages.cloud.google.com/yum/repos/kubernetes-el7-x86_64
+        gpgkey: https://packages.cloud.google.com/yum/doc/yum-key.gpg https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg
+        gpgcheck: yes
+
+    - name: install kubelet
+      yum:
+          name: "kubelet-{{ version }}"
+          state: present
+          update_cache: true
+
+    - name: install kubeadm
+      yum:
+          name: "kubeadm-{{ version }}"
+          state: present
+
+    - name: start kubelet
+      service:
+        name: kubelet
+        enabled: yes
+        state: started
+    
+    
+
+- hosts: kubernetes_master_nodes
+  become: yes
+  tasks:
+    - name: install APT Transport HTTPS
+      apt:
+        name: apt-transport-https
+        state: present
+        update_cache: yes
+
+    - name: add Kubernetes apt-key
+      apt_key:
+        url: https://packages.cloud.google.com/apt/doc/apt-key.gpg
+        state: present
+
+    - name: add Kubernetes' APT repository
+      apt_repository:
+        repo: deb http://apt.kubernetes.io/ kubernetes-xenial main
+        state: present
+        filename: 'kubernetes'
+
+    - apt:
+        name: "*"
+        state: latest
+        update_cache: yes
+
+    - name: install kubectl
+      apt:
+        name: "kubectl={{ version }}-00"
+        state: present
